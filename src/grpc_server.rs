@@ -1,5 +1,13 @@
 use tonic::{transport::Server, Request, Response, Status};
 
+// Step 27: Use necessary library
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+
+// Step 28: Use necessary services
+use services::transaction_service_server::{TransactionService, TransactionServiceServer};
+use services::{TransactionRequest, TransactionResponse};
+
 // Step 12: Define the public module for the generated proto code
 pub mod services {
     tonic::include_proto!("services");
@@ -33,16 +41,60 @@ impl PaymentService for MyPaymentService {
     }
 }
 
-// Step 16: Implement PaymentService in main function, define the port and start the server
+// Step 29: Define a struct
+#[derive(Default)]
+pub struct MyTransactionService {}
+
+// Step 30: Implement the TransactionService trait
+#[tonic::async_trait]
+impl TransactionService for MyTransactionService {
+    type get_transaction_historyStream = ReceiverStream<Result<TransactionResponse, Status>>;
+
+    async fn get_transaction_history(
+        &self,
+        request: Request<TransactionRequest>,
+    ) -> Result<Response<Self::get_transaction_historyStream>, Status> {
+        println!("Received transaction history request: {:?}", request);
+
+        // Channel Setup
+        let (tx, rx) = mpsc::channel(4);
+
+        // Stream Generation
+        tokio::spawn(async move {
+            for i in 1..=30 {
+                let response = TransactionResponse {
+                    transaction_id: format!("txn_{}", i),
+                    status: "Completed".to_string(),
+                    timestamp: "2026-05-04T12:00:00Z".to_string(),
+                };
+
+                // Send the transaction to the channel
+                if tx.send(Ok(response)).await.is_err() {
+                    println!("Client disconnected");
+                    break;
+                }
+
+                // Add a slight delay to simulate real-world streaming
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "[::1]:50051".parse()?;
+
     let payment_service = MyPaymentService::default();
+    let transaction_service = MyTransactionService::default(); // Initialize the new service
 
     println!("gRPC Server listening on {}", addr);
 
     Server::builder()
         .add_service(PaymentServiceServer::new(payment_service))
+        .add_service(TransactionServiceServer::new(transaction_service)) // Add it here
         .serve(addr)
         .await?;
 
